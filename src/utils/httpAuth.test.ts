@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { matchesSessionAuth, parseBearerAuthorization } from "./httpAuth.js";
-import { getRequestAuthToken, runWithRequestAuth } from "./requestAuth.js";
+import { getRequestAuth, runWithRequestAuth } from "./requestAuth.js";
 
 describe("HTTP request authentication", () => {
   it("requires bearer credentials in per-client mode", () => {
@@ -27,18 +27,21 @@ describe("HTTP request authentication", () => {
   });
 });
 
-describe("request-scoped API keys", () => {
+describe("request-scoped credentials", () => {
   it("keeps concurrent MCP requests isolated", async () => {
-    const first = runWithRequestAuth("first-key", async () => {
+    const first = runWithRequestAuth("first-key", "api-key", async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return getRequestAuthToken();
+      return getRequestAuth();
     });
-    const second = runWithRequestAuth("second-key", async () => {
+    const second = runWithRequestAuth("second-key", "oauth", async () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
-      return getRequestAuthToken();
+      return getRequestAuth();
     });
 
-    await expect(Promise.all([first, second])).resolves.toEqual(["first-key", "second-key"]);
-    expect(getRequestAuthToken()).toBeUndefined();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { token: "first-key", mode: "api-key" },
+      { token: "second-key", mode: "oauth" },
+    ]);
+    expect(getRequestAuth()).toBeUndefined();
   });
 });

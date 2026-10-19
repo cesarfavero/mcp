@@ -6,7 +6,8 @@ services:
       - "${EXTERNAL_PORT:-3000}:3000"
     environment:
       - MCP_TRANSPORT=${MCP_TRANSPORT:-http}
-      - MCP_AUTH_MODE=${MCP_AUTH_MODE:-api-key}
+      - MCP_AUTH_MODE=${MCP_AUTH_MODE:-oauth}
+      - MCP_RESOURCE_URL=${MCP_RESOURCE_URL:-}
       - DOKPLOY_URL=${DOKPLOY_URL:-https://your-dokploy-server.com}
     restart: unless-stopped
     networks:

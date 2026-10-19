@@ -237,7 +237,7 @@ The Docker container supports both **stdio** and **HTTP** transport modes, makin
     docker run -it --rm \
       -p 8080:3000 \
       -e MCP_TRANSPORT=http \
-      -e MCP_AUTH_MODE=api-key \
+      -e MCP_AUTH_MODE=oauth \
       -e DOKPLOY_URL=https://your-dokploy-server.com \
       dokploy-mcp
     ```
@@ -306,8 +306,9 @@ The configuration on Windows is slightly different compared to Linux or macOS. U
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DOKPLOY_URL` | Yes | Your Dokploy server URL (e.g., `https://your-dokploy-server.com`) |
-| `DOKPLOY_API_KEY` | Stdio/process mode | Your Dokploy API authentication token. In HTTP `api-key` mode, omit this and each client supplies its own Dokploy API key as a Bearer token. |
-| `MCP_AUTH_MODE` | No | HTTP authentication mode: `api-key` requires a per-client Dokploy API key in `Authorization: Bearer <key>` on every request and binds it to the MCP session. `process` uses the configured `DOKPLOY_API_KEY`. HTTP defaults to `api-key`; stdio defaults to `process`. |
+| `DOKPLOY_API_KEY` | Stdio/process mode | Your Dokploy API authentication token for local stdio or an intentionally shared process identity. OAuth HTTP mode does not use a shared key. |
+| `MCP_AUTH_MODE` | No | HTTP authentication mode: `oauth` uses the user's Dokploy OAuth authorization, `api-key` accepts a per-client API key, and `process` uses `DOKPLOY_API_KEY`. HTTP defaults to `oauth`; stdio defaults to `process`. |
+| `MCP_RESOURCE_URL` | OAuth HTTP mode | The public HTTPS resource identifier for this MCP endpoint, ending in `/mcp`. Configure the same URL as `DOKPLOY_MCP_RESOURCE_URL` on Dokploy. |
 | `DOKPLOY_CUSTOM_HEADERS` | No | JSON object of additional upstream request headers. Header names and values must be strings. Reserved headers cannot be set here: `x-api-key`, `content-type`, `accept`. |
 | `DOKPLOY_TOOL_PRESET` | No | Predefined toolset to load: `all` (default), `minimal`, `core`, `deploy`, `databases`, or `git`. Useful for clients/providers that struggle with very large tool lists. |
 | `DOKPLOY_ENABLED_TAGS` | No | Comma-separated list of tags to filter which tools are loaded (e.g., `project,application,postgres`) |
@@ -351,9 +352,9 @@ npx -y @dokploy/mcp --http
 MCP_TRANSPORT=http npx -y @dokploy/mcp
 ```
 
-HTTP mode defaults to per-client API key authentication. Configure the MCP process with `DOKPLOY_URL` and `MCP_AUTH_MODE=api-key`, and omit `DOKPLOY_API_KEY`. Each MCP client must send its own Dokploy API key as an `Authorization: Bearer <key>` header. The MCP server validates the key against the Dokploy API, binds the session to its fingerprint, and forwards the caller's key for each tool call. Dokploy then applies the caller's existing user and organization permissions.
+HTTP mode defaults to OAuth. Configure the MCP process with `DOKPLOY_URL`, `MCP_RESOURCE_URL`, and expose it over HTTPS. Set the same resource URL as `DOKPLOY_MCP_RESOURCE_URL` on the Dokploy server. Clients discover protected-resource metadata, register or identify an OAuth client, and authorize the requested Dokploy account and organization through the browser consent flow. Tokens are audience-bound to the MCP endpoint. The server binds each MCP session to its bearer token and forwards that token for every tool call. Dokploy revalidates the token, session, organization membership, and existing resource permissions on each API request. The OAuth flow uses authorization code with PKCE, short-lived access tokens, refresh, and revocation.
 
-Clients that cannot set an authorization header cannot use this API-key mode. OAuth support for hosted clients such as ChatGPT remains a separate integration with Dokploy's authorization server. For a private deployment that intentionally uses one process identity, set `MCP_AUTH_MODE=process` and `DOKPLOY_API_KEY`; keep that endpoint private and restrict access at the network layer.
+For a private deployment with a trusted network boundary, `MCP_AUTH_MODE=process` and `DOKPLOY_API_KEY` remain available for a shared process identity. `MCP_AUTH_MODE=api-key` remains available for clients that explicitly manage Dokploy API keys.
 
 **Modern Streamable HTTP Endpoints:**
 

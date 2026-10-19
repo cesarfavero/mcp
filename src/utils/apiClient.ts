@@ -1,7 +1,7 @@
 import axios, { type AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from "axios";
 import { getClientConfig } from "./clientConfig.js";
 import { createLogger } from "./logger.js";
-import { getRequestAuthToken } from "./requestAuth.js";
+import { getRequestAuth } from "./requestAuth.js";
 
 // Extend the config interface to include metadata
 interface ExtendedAxiosRequestConfig extends InternalAxiosRequestConfig {
@@ -37,9 +37,11 @@ const apiClient = axios.create({
 // Request interceptor - Add request timing and logging
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const requestAuthToken = getRequestAuthToken();
-    if (requestAuthToken) {
-      config.headers["x-api-key"] = requestAuthToken;
+    const requestAuth = getRequestAuth();
+    if (requestAuth?.mode === "api-key") {
+      config.headers["x-api-key"] = requestAuth.token;
+    } else if (requestAuth?.mode === "oauth") {
+      config.headers.Authorization = `Bearer ${requestAuth.token}`;
     }
 
     // Add request timestamp for performance monitoring
@@ -112,7 +114,10 @@ function handleServerError(response: AxiosResponse): void {
 
   switch (status) {
     case 401:
-      logger.error("Authentication failed - Invalid or expired API key", errorContext);
+      logger.error(
+        "Authentication failed - Invalid or expired Dokploy authorization",
+        errorContext,
+      );
       break;
     case 403:
       logger.error("Access forbidden - Insufficient permissions", errorContext);
@@ -170,6 +175,12 @@ export function clearAuthToken(): void {
 export async function verifyRequestApiKey(token: string): Promise<void> {
   await apiClient.get("/user.get", {
     headers: { "x-api-key": token },
+  });
+}
+
+export async function verifyRequestOAuthToken(token: string): Promise<void> {
+  await apiClient.get("/user.get", {
+    headers: { Authorization: `Bearer ${token}` },
   });
 }
 

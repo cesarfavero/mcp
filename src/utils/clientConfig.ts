@@ -3,7 +3,8 @@ import { DEFAULT_REDACTED_FIELDS } from "./redactSensitive.js";
 export interface Config {
   dokployUrl: string;
   authToken?: string;
-  authMode: "process" | "api-key";
+  authMode: "process" | "api-key" | "oauth";
+  mcpResourceUrl?: string;
   customHeaders: Record<string, string>;
   timeout: number;
   retryAttempts: number;
@@ -88,17 +89,43 @@ class ConfigManager {
       process.argv.includes("--http") ||
       process.argv.includes("--sse");
     const requestedAuthMode =
-      process.env.MCP_AUTH_MODE?.trim().toLowerCase() || (isHttpTransport ? "api-key" : "process");
-    const authMode = requestedAuthMode === "api-key" ? "api-key" : "process";
+      process.env.MCP_AUTH_MODE?.trim().toLowerCase() || (isHttpTransport ? "oauth" : "process");
+    const authMode =
+      requestedAuthMode === "api-key" || requestedAuthMode === "oauth"
+        ? requestedAuthMode
+        : "process";
+    const mcpResourceUrl = process.env.MCP_RESOURCE_URL?.trim();
 
     if (!dokployUrl) {
       throw new Error("Environment variable DOKPLOY_URL is not defined");
     }
-    if (requestedAuthMode !== "process" && requestedAuthMode !== "api-key") {
-      throw new Error("MCP_AUTH_MODE must be either 'process' or 'api-key'");
+    if (
+      requestedAuthMode !== "process" &&
+      requestedAuthMode !== "api-key" &&
+      requestedAuthMode !== "oauth"
+    ) {
+      throw new Error("MCP_AUTH_MODE must be 'process', 'api-key', or 'oauth'");
     }
-    if (!authToken && !(isHttpTransport && authMode === "api-key")) {
+    if (!authToken && !(isHttpTransport && (authMode === "api-key" || authMode === "oauth"))) {
       throw new Error("Environment variable DOKPLOY_API_KEY is not defined");
+    }
+    if (isHttpTransport && authMode === "oauth" && !mcpResourceUrl) {
+      throw new Error(
+        "MCP_RESOURCE_URL must be the public HTTPS URL of the protected /mcp endpoint when OAuth is enabled",
+      );
+    }
+    if (mcpResourceUrl) {
+      const resource = new URL(mcpResourceUrl);
+      if (
+        resource.pathname !== "/mcp" ||
+        (resource.protocol !== "https:" &&
+          resource.hostname !== "localhost" &&
+          resource.hostname !== "127.0.0.1")
+      ) {
+        throw new Error(
+          "MCP_RESOURCE_URL must use HTTPS and end in /mcp (HTTP is allowed only on localhost)",
+        );
+      }
     }
 
     const redactEnv = parseBoolean(process.env.DOKPLOY_REDACT_ENV, true);
@@ -112,6 +139,7 @@ class ConfigManager {
       dokployUrl,
       ...(authToken ? { authToken } : {}),
       authMode,
+      ...(mcpResourceUrl ? { mcpResourceUrl } : {}),
       customHeaders: parseCustomHeaders(process.env.DOKPLOY_CUSTOM_HEADERS),
       timeout: parseInt(process.env.DOKPLOY_TIMEOUT || "30000", 10),
       retryAttempts: parseInt(process.env.DOKPLOY_RETRY_ATTEMPTS || "3", 10),

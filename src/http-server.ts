@@ -6,9 +6,9 @@ import { serve } from "@hono/node-server";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { createServer } from "./server.js";
-import { verifyRequestApiKey } from "./utils/apiClient.js";
+import { verifyRequestApiKey, verifyRequestOAuthToken } from "./utils/apiClient.js";
 import { getClientConfig } from "./utils/clientConfig.js";
 import { matchesSessionAuth, parseBearerAuthorization } from "./utils/httpAuth.js";
 import { createLogger } from "./utils/logger.js";
@@ -16,7 +16,8 @@ import { runWithRequestAuth } from "./utils/requestAuth.js";
 
 const PORT = 3000;
 const logger = createLogger("MCP-HTTP-Server");
-const requestApiKeyAuth = getClientConfig().authMode === "api-key";
+const requestAuthMode = getClientConfig().authMode;
+const requestScopedAuth = requestAuthMode === "api-key" || requestAuthMode === "oauth";
 
 interface AuthenticatedSession<T> {
   transport: T;
@@ -24,23 +25,37 @@ interface AuthenticatedSession<T> {
 }
 
 function withCallerAuth<T>(token: string | undefined, callback: () => T): T {
-  return token ? runWithRequestAuth(token, callback) : callback();
+  return token && requestScopedAuth
+    ? runWithRequestAuth(token, requestAuthMode as "api-key" | "oauth", callback)
+    : callback();
 }
 
 function unauthorized() {
   return {
     jsonrpc: "2.0" as const,
-    error: { code: -32001, message: "Unauthorized: provide a Dokploy API key as a Bearer token" },
+    error: {
+      code: -32001,
+      message: "Unauthorized: complete OAuth authorization or provide a valid bearer token",
+    },
     id: null,
   };
 }
 
 async function authenticateRequest(authorization: string | undefined) {
-  const auth = parseBearerAuthorization(authorization, requestApiKeyAuth);
+  const auth = parseBearerAuthorization(authorization, requestScopedAuth);
   if (!auth) return null;
   if (auth.token) {
     try {
-      await verifyRequestApiKey(auth.token);
+      if (requestAuthMode === "oauth") {
+        const payload = auth.token.split(".")[1];
+        if (!payload) return null;
+        const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+          aud?: string | string[];
+        };
+        const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+        if (!audiences.includes(getClientConfig().mcpResourceUrl)) return null;
+        await verifyRequestOAuthToken(auth.token);
+      } else await verifyRequestApiKey(auth.token);
     } catch {
       return null;
     }
@@ -73,12 +88,35 @@ export async function main() {
   // Health check
   app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOString() }));
 
+  // OAuth protected resource metadata used by any MCP-compatible client.
+  const protectedResourceMetadata = (c: Context<{ Bindings: HttpBindings }>) => {
+    const resource = getClientConfig().mcpResourceUrl;
+    const authorizationServer = `${getClientConfig().dokployUrl.replace(/\/+$/, "")}/api/auth`;
+    return c.json({
+      resource,
+      authorization_servers: [authorizationServer],
+      bearer_methods_supported: ["header"],
+      scopes_supported: ["dokploy"],
+    });
+  };
+  app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
+  app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata);
+
+  const setOAuthChallenge = (c: Context<{ Bindings: HttpBindings }>) => {
+    const resourceUrl = getClientConfig().mcpResourceUrl as string;
+    const metadataUrl = new URL(
+      "/.well-known/oauth-protected-resource/mcp",
+      resourceUrl,
+    ).toString();
+    c.header("WWW-Authenticate", `Bearer resource_metadata="${metadataUrl}", scope="dokploy"`);
+  };
+
   // Modern Streamable HTTP - POST
   app.post("/mcp", async (c) => {
     const { incoming, outgoing } = c.env;
     const callerAuth = await authenticateRequest(c.req.header("authorization"));
     if (!callerAuth) {
-      c.header("WWW-Authenticate", 'Bearer realm="dokploy-mcp"');
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
     try {
@@ -87,8 +125,9 @@ export async function main() {
       if (
         sessionId &&
         (!session ||
-          !matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestApiKeyAuth))
+          !matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestScopedAuth))
       ) {
+        setOAuthChallenge(c);
         return c.json(unauthorized(), 401);
       }
       let transport: StreamableHTTPServerTransport;
@@ -147,7 +186,7 @@ export async function main() {
     const sessionId = c.req.header("mcp-session-id");
     const callerAuth = await authenticateRequest(c.req.header("authorization"));
     if (!callerAuth) {
-      c.header("WWW-Authenticate", 'Bearer realm="dokploy-mcp"');
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
 
@@ -155,7 +194,8 @@ export async function main() {
     if (!sessionId || !session) {
       return c.json(jsonrpcError(-32000, "Invalid or missing session ID"), 400);
     }
-    if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestApiKeyAuth)) {
+    if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestScopedAuth)) {
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
 
@@ -178,7 +218,7 @@ export async function main() {
     const sessionId = c.req.header("mcp-session-id");
     const callerAuth = await authenticateRequest(c.req.header("authorization"));
     if (!callerAuth) {
-      c.header("WWW-Authenticate", 'Bearer realm="dokploy-mcp"');
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
 
@@ -186,7 +226,8 @@ export async function main() {
     if (!sessionId || !session) {
       return c.json(jsonrpcError(-32000, "Invalid or missing session ID"), 400);
     }
-    if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestApiKeyAuth)) {
+    if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestScopedAuth)) {
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
 
@@ -213,7 +254,7 @@ export async function main() {
     const { outgoing } = c.env;
     const callerAuth = await authenticateRequest(c.req.header("authorization"));
     if (!callerAuth) {
-      c.header("WWW-Authenticate", 'Bearer realm="dokploy-mcp"');
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
     try {
@@ -245,7 +286,7 @@ export async function main() {
     const { incoming, outgoing } = c.env;
     const callerAuth = await authenticateRequest(c.req.header("authorization"));
     if (!callerAuth) {
-      c.header("WWW-Authenticate", 'Bearer realm="dokploy-mcp"');
+      setOAuthChallenge(c);
       return c.json(unauthorized(), 401);
     }
     try {
@@ -258,7 +299,8 @@ export async function main() {
       if (!session) {
         return c.json(jsonrpcError(-32000, "No transport found for sessionId"), 400);
       }
-      if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestApiKeyAuth)) {
+      if (!matchesSessionAuth(session.authFingerprint, callerAuth.fingerprint, requestScopedAuth)) {
+        setOAuthChallenge(c);
         return c.json(unauthorized(), 401);
       }
 
