@@ -2,7 +2,8 @@ import { DEFAULT_REDACTED_FIELDS } from "./redactSensitive.js";
 
 export interface Config {
   dokployUrl: string;
-  authToken: string;
+  authToken?: string;
+  authMode: "process" | "api-key";
   customHeaders: Record<string, string>;
   timeout: number;
   retryAttempts: number;
@@ -81,11 +82,22 @@ class ConfigManager {
   private loadConfig(): Config {
     const dokployUrl = process.env.DOKPLOY_URL;
     const authToken = process.env.DOKPLOY_API_KEY;
+    const isHttpTransport =
+      process.env.MCP_TRANSPORT === "http" ||
+      process.env.MCP_TRANSPORT === "sse" ||
+      process.argv.includes("--http") ||
+      process.argv.includes("--sse");
+    const requestedAuthMode =
+      process.env.MCP_AUTH_MODE?.trim().toLowerCase() || (isHttpTransport ? "api-key" : "process");
+    const authMode = requestedAuthMode === "api-key" ? "api-key" : "process";
 
     if (!dokployUrl) {
       throw new Error("Environment variable DOKPLOY_URL is not defined");
     }
-    if (!authToken) {
+    if (requestedAuthMode !== "process" && requestedAuthMode !== "api-key") {
+      throw new Error("MCP_AUTH_MODE must be either 'process' or 'api-key'");
+    }
+    if (!authToken && !(isHttpTransport && authMode === "api-key")) {
       throw new Error("Environment variable DOKPLOY_API_KEY is not defined");
     }
 
@@ -98,7 +110,8 @@ class ConfigManager {
 
     return {
       dokployUrl,
-      authToken,
+      ...(authToken ? { authToken } : {}),
+      authMode,
       customHeaders: parseCustomHeaders(process.env.DOKPLOY_CUSTOM_HEADERS),
       timeout: parseInt(process.env.DOKPLOY_TIMEOUT || "30000", 10),
       retryAttempts: parseInt(process.env.DOKPLOY_RETRY_ATTEMPTS || "3", 10),

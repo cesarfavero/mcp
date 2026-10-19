@@ -1,6 +1,7 @@
 import axios, { type AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from "axios";
 import { getClientConfig } from "./clientConfig.js";
 import { createLogger } from "./logger.js";
+import { getRequestAuthToken } from "./requestAuth.js";
 
 // Extend the config interface to include metadata
 interface ExtendedAxiosRequestConfig extends InternalAxiosRequestConfig {
@@ -20,7 +21,7 @@ const DEFAULT_HEADERS = {
   "Content-Type": "application/json",
   Accept: "application/json",
   ...config.customHeaders,
-  "x-api-key": config.authToken,
+  ...(config.authMode === "process" && config.authToken ? { "x-api-key": config.authToken } : {}),
 } as const;
 
 // Create axios instance with configuration from clientConfig
@@ -36,6 +37,11 @@ const apiClient = axios.create({
 // Request interceptor - Add request timing and logging
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    const requestAuthToken = getRequestAuthToken();
+    if (requestAuthToken) {
+      config.headers["x-api-key"] = requestAuthToken;
+    }
+
     // Add request timestamp for performance monitoring
     (config as ExtendedAxiosRequestConfig).metadata = { startTime: Date.now() };
 
@@ -159,6 +165,12 @@ export function clearAuthToken(): void {
   // Remove authorization header
   delete apiClient.defaults.headers.common["x-api-key"];
   logger.info("Auth token cleared from API client");
+}
+
+export async function verifyRequestApiKey(token: string): Promise<void> {
+  await apiClient.get("/user.get", {
+    headers: { "x-api-key": token },
+  });
 }
 
 // Export the configured axios instance
